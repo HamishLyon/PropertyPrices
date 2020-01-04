@@ -1,0 +1,339 @@
+---
+title: "Ames, Iowa House Data"
+author: "Hamish Lyon"
+date: "01-01-2020"
+output: 
+  pdf_document: 
+    latex_engine: xelatex
+---
+
+# Introduction
+
+# The Dataset
+```{r LoadPackages, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(naniar)) install.packages("naniar", repos = "http://cran.us.r-project.org")
+if(!require(UpSetR)) install.packages("UpSetR", repos = "http://cran.us.r-project.org")
+if(!require(ggplot2)) install.packages("ggplot2", repos = "http://cran.us.r-project.org")
+if(!require(knitr)) install.packages("knitr", repos = "http://cran.us.r-project.org")
+if(!require(mice)) install.packages("mice", repos = "http://cran.us.r-project.org")
+if(!require(Matrix)) install.packages("Matrix", repos = "http://cran.us.r-project.org")
+if(!require(xgboost)) install.packages("xgboost", repos = "http://cran.us.r-project.org")
+if(!require(rpart)) install.packages("rpart", repos = "http://cran.us.r-project.org")
+if(!require(rpart.plot)) install.packages("rpart.plot", repos = "http://cran.us.r-project.org")
+
+```
+```{r loadData, echo=FALSE}
+
+# HouseData <- read.csv(".../train.csv")
+
+HouseData <- read.csv(".../Data.csv")
+
+```
+
+The AmesDataset is a sample of the houses which have been sold in Ames, Iowa, I have chosen this data set because it has a significant number of features which can be explored. It is also appealing because I am currently in the process of looking at houses to buy myself, albiet in Western Australia, and as this is a real set of real estate data so I am interested in whether or not there is any interesting features which drive the price of houses which might be counter intuitive.
+
+```{r dataStructure, echo=FALSE, warning=FALSE}
+tibble(HouseData)
+```
+Investing the structure of the dataset we can see that the dataset consistents of integers and factors. We can also see that there are quite a few features which measure different aspects of the same feature of the house. For example, the Basement of the house has BsmtQual, BasmtCond, BsmtExposure, BsmtFinType1, BsmtFinSF1, BasmtFinType2, BsmtFinSF2, BsmtUnfSF, and finally - TotalBsmtSF. This is true for quite a few features, some which common senses tell us will demonstrate collinearity, for example there is a measure of how many square feet there are in the garage and also how many cars will fit in the garage. This is essentially two different ways of measuring the size of the garage of a premise.
+
+Another interesting feature of the dataset is that ther are a lot of NA values on the PoolQC, Fence, MiscFeature, and Alley - intuitively it seems like those houses don't have a pool, a fence, aren't next to an alley, and don't have any interesting additional features worth mentioning. Interesting there is only one feature which indicates the location, in my experience location is very important to determining the price of a house so it'll be interesting to see how this feature impacts the prediction of the price.
+
+# Methods
+
+In the method sections we'll look at cleaning the data as previously we identified a lot of NA values. Exploring the dataset by visualising some of the more interesting relationships; discuss any insights which are gleaned from this analysis, how this influenced the modelling approach.
+
+## Data Cleaning
+
+Before we take a look at some of the data in any details - lets first take a look at the missing features. While the graph below looks a little congested, I left it like this so it wouldn't take up too much space. So, it turns out that as we observed above PoolQC, Fence, MiscFeature, and Alley are nearly entirely NA. Additionally we see that just under half of the properties don't have a fire place and the remaining NAs relate to the LotFrontage, aspects of the Garage, and aspects of the Basement. There are a few features which are missing data but it it appears to be a bit more incomplete than the previously mentioned features.
+
+```{r missingData, echo=FALSE, warning=FALSE, fig.width=10,fig.height=12}
+gg_miss_var(HouseData)
+```
+
+There doesn't seem to be a structure to the missingness of the data other than the groups containing PoolQC, Fence, MiscFeature, and Alley seem to be houses without these features and NA is the method of recording this for the house.
+
+```{r missingnessInData, echo=FALSE, warning=FALSE}
+HouseData %>%
+  as_shadow_upset() %>%
+  upset()
+```
+Next, the features are divided into those which I am going to explicitly make the feature NA a factor and those for which I am going to impute a value; the imputation method is using a cart model. If I had more time I would explore the `MICE` package and imputation methods further, this was my first introduction to using a method like this and the idea that you can predictively replace data is very powerful. 
+```{r cleanData1, echo=FALSE, warning=FALSE}
+MissingData <- c('PoolQC', 'MiscFeature', 'Alley', 'Fence')
+ImputableData <- setdiff(names(HouseData), MissingData)
+RemovedHouseData <- HouseData[MissingData]
+HouseData <- HouseData[ImputableData]
+```
+First I convert MSSubClass into a factor as this is a factor like feature which R has read in as an integer.
+```{r cleanData2, echo=TRUE, warning=FALSE}
+HouseData <- HouseData %>%
+  mutate(MSSubClass = as.factor(HouseData$MSSubClass))
+```
+Next, I have removed the following columns `MissingData <- c('PoolQC', 'MiscFeature', 'Alley', 'Fence')` and call the mice function on the remaining columns.
+```{r cleanData3, echo=TRUE, warning=FALSE}
+imputatedHouse <- mice(HouseData, m=1, method='cart', printFlag=FALSE)
+HouseData <- complete(imputatedHouse)
+```
+Then, the features `c('PoolQC', 'MiscFeature', 'Alley', 'Fence')` are converted from a true NA value to adding NA as a factor so that it is available to future models.
+``` {r cleanData4, echo=FALSE, warning=FALSE}
+RemovedHouseData <- RemovedHouseData %>% 
+  mutate(PoolQC = addNA(PoolQC),
+         MiscFeature = addNA(MiscFeature),
+         Alley = addNA(Alley),
+         Fence = addNA(Fence))
+```
+Finally, I bind the two datasets back into the original dataset - HouseData. Hopefully it's clear that for those features which I was resonably sure were intentionally not recorded have been treated appropriately and those which I was not sure about were predicted from the dataset itself.
+``` {r cleanUpEnvironment, echo=FALSE,warning=FALSE}
+HouseData <- cbind(HouseData, RemovedHouseData)
+rm(imputatedHouse, RemovedHouseData, ImputableData, MissingData)
+```
+
+## Data Exploration
+
+Looking at the summary of the data, `GrLivArea`, `TotalBsmtSF`, `LotArea`, and `LotFrontage` all have maximum values which seem to deviate from their distributions central location. Lets investigate the distributions individually to assess whether or not this is caused by outliers or by kurtosis by creating histograms of each variable.
+
+``` {r scrubData1,echo=FALSE}
+HouseData %>%
+  select(GrLivArea, TotalBsmtSF, LotArea, LotFrontage) %>%
+  summary(GrLivArea = max(GrLivArea), GrLivArea = max(TotalBsmtSF), LotArea = max(LotArea), LotFrontage = max(LotFrontage)) %>%
+  kable()
+```
+
+Reviewing the histograms of these features below it is apparent that all these maximum values deviate from the distribution significantly enough for them to be considered outliers. 
+
+``` {r scrubData2, echo=FALSE, warning=FALSE}
+g1 <- HouseData %>%
+  ggplot(aes(GrLivArea)) +
+  geom_histogram(bins = 10)
+
+g2 <- HouseData %>%
+  ggplot(aes(TotalBsmtSF)) +
+  geom_histogram(bins = 10)
+
+g3 <- HouseData %>%
+  ggplot(aes(LotArea)) + 
+  geom_histogram(bins = 10)
+
+g4 <- HouseData %>%
+  ggplot(aes(LotFrontage)) +
+  geom_histogram(bins = 10)
+
+gridExtra::grid.arrange(g1,g2,g3,g4)
+```
+
+My method of removing outliers is quite basic, I inspected the graphs and filtered the data below to remove the outliers about a visually identified constant. I believe this method could be improved upon and in the future I would like to use a method which 'derives' the limts from the data. The constants can be found in the code below:
+```{r scrubDat3, echo = TRUE}
+HouseData <- HouseData %>%
+              filter(GrLivArea < 3999.9,
+                     TotalBsmtSF < 2999.9,
+                     LotArea < 9999.9,
+                     LotFrontage < 199.9)
+```
+
+## Sale Price Transformation
+
+Below there is a histrogram of SalePrice and following that a graph of a $log(SalePrice + 1)$ transformation graphed to illustrate the skewed nature of SalePrice and the result of the transformation.
+
+``` {r HousePriceVisual, echo=FALSE}
+h_1 <- HouseData %>%
+  ggplot(aes(x = SalePrice)) +
+  geom_histogram(bins=10) + 
+  ylab(label = "Frequency") +
+  xlab (label = "SalePrice ")
+
+h_2 <- HouseData %>%
+  mutate(SalePrice = log(SalePrice + 1)) %>%
+  ggplot(aes(x = SalePrice)) +
+  geom_histogram(bins=10) + 
+  ylab(label = "Frequency") + 
+  xlab(label = "Log(SalePrice + 1)")
+
+gridExtra::grid.arrange(h_1, h_2)
+```
+
+Seeing this result it seems reasonable to assume that the $log(y + c)$ transformation produces a sufficiently normal outcome. The SalePrice is transformed below:
+
+``` {r HousePriceTransform, echo=TRUE}
+HouseData$SalePrice <- log(HouseData$SalePrice + 1)
+```
+
+I did this to avoid skewing the errors during the evaluation of the prediction later in the report. I understand that my use of $log(y + 1)$ could be improved by fitting a $c$ which improves the model outcome in the future. I also believe there are opportunities for additional transformations within the data as there are many other features which demonstrate visual skewedness but it falls outside of the scope of what I am doigng now.
+
+Finally, the data is split into a training and testing at this point because there are no more transformations to be done on the data.
+
+``` {r TrainingTesting, echo=TRUE}
+set.seed(2)
+indexSet <- createDataPartition(y = HouseData$SalePrice, times = 1, p = 0.1, list = FALSE)
+trainingSet <- HouseData[-indexSet, ]
+testingSet <- HouseData[indexSet, ]
+```
+
+
+
+## Modelling: Decision Tree
+
+When thinking about the model I researched decision trees because it was the most intuitively similar approach to how I view house prices as a collection of individual decisions around how many rooms it has, whether or not it has a pool, and so forth. Below I create the output a tree model and print its output. When inspecting the various decision nodes I realised that is concerned with a lot variables such could more easily be predicted by linear relationships between variables, like GrLivArea.
+
+``` {r treeModel Creation & Plot, echo=FALSE}
+
+set.seed(2)
+treeModel <- rpart(SalePrice~. -Id,
+                   data = trainingSet,
+                   control = rpart.control(cp = 0.01))
+treeModel
+```
+
+Following this I investigated some of the more important linear relationships with newly transformed SalePrice target variable.
+
+## Modelling: Exploring Linear Relationships
+
+``` {r linearRelationships1, echo=FALSE}
+lr1 <- HouseData %>%
+  ggplot(aes(x = GrLivArea, y = SalePrice)) + 
+  geom_point() + 
+  ggtitle("SalesPrice ~ GrLivArea")
+```
+``` {r linearRelationships2, echo=FALSE}
+lr2 <- HouseData %>%
+  ggplot(aes(x = YearBuilt, y = SalePrice)) + 
+  geom_point() + 
+  ggtitle("SalesPrice ~ YearBuilt")
+```
+``` {r linearRelationships3, echo=FALSE}
+lr3 <- HouseData %>%
+  ggplot(aes(x = LotArea, y = SalePrice)) + 
+  geom_point() + 
+  ggtitle("SalesPrice ~ LotArea")
+```
+``` {r linearRelationships4, echo=FALSE}
+lr4 <-HouseData %>%
+  ggplot(aes(x = GarageArea, y = SalePrice)) + 
+  geom_point() + 
+  ggtitle("SalesPrice ~ GarageArea")
+```
+```{r linearRelationships5, echo=FALSE}
+gridExtra::grid.arrange(lr1,lr2,lr3,lr4)
+```
+Below is a summary of some of the different independent variables and their relationship to the target variable, Sale Price. There is general linear response between some variables, most noteably `SalePrice ~ GrLivArea`.
+
+## Modelling: Linear Models
+The first linear model based on the analysis of linear impacts of the numerical values in the dataset is below:
+
+```{r linearModel1, echo=FALSE}
+LinearModel_1 <- lm(SalePrice ~ GrLivArea + TotalBsmtSF + YearBuilt + LotArea + GarageArea, data = trainingSet)
+summary(LinearModel_1)
+```
+
+Beyond this analysis of numerical features there were several two factors which seems to vary significantly in response to the SalePrice variable.
+
+``` {r factorRelationship1, echo=FALSE}
+fr1 <- HouseData %>%
+  ggplot(aes(x = MSZoning, y = SalePrice)) + 
+  geom_boxplot()
+```
+``` {r factorRelationship2, echo=FALSE}
+fr2 <- HouseData %>%
+  ggplot(aes(x = Neighborhood, y = SalePrice)) + 
+  geom_boxplot() +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+```
+``` {r factorRelationship3, echo=FALSE}
+gridExtra::grid.arrange(fr1,fr2)
+```
+
+```{r linearModel2, echo=FALSE}
+LinearModel_2 <- lm(SalePrice ~ GrLivArea + TotalBsmtSF + YearBuilt + LotArea + GarageArea + Neighborhood, data = trainingSet)
+summary(LinearModel_2)
+```
+
+When intepreting the outcome you can see that when `Neighborhood` is converted into a dummy variable only some are useful and this can practically be intepreted as the 'goodness' of each neighbourhood. Rather than trying to engineer this into a better feature I will try to better predict these complex factors below.
+
+## Modelling: Extreme Gradient Boosting
+
+Finally, I realised upon studying output of the second linear model that there was significant feature engineering which would need to be done to make the factor however I understand that more sophisticated modelling methods like the `xgboost()` can capture a lot of this complexity without the need for the engineering of new features. For this reason I tried Extreme Gradient Boosting.
+
+When building the model for lack of deep understanding of the xgboost package played and tested individual settings rather than following a rigorious tuning process. If I was progressing this further I would investigate an optimal tuning method for the many paramters required by the `xgboost()` algorithm. One aspect I focused on was avoiding over fitting to maximise the result on my testing set, to do this I restricted the number of runs to `early_stopping_rounds = 50`. The use of `sparse.model.matrix(SalePrice~ .-Id, trainingSet)` is memory saving as a sparse matrix will not save the zero values into memory.
+
+```{r ExtremeGradientBoosting, echo=TRUE}
+set.seed(2)
+extremeGradientBoosting <- xgboost(
+  params = list(
+  max_depth = 5,
+  eta = 0.02,
+  gamma = 0,
+  colsample_bytree = 0.65,
+  subsample = 0.6,
+  min_child_weight = 3), 
+  data = sparse.model.matrix(
+    SalePrice~ .-Id, 
+    trainingSet), 
+  label = trainingSet$SalePrice, 
+  nrounds = 1000, nfold = 10, 
+  showsd = F, 
+  stratified = T, 
+  print_every_n = 100, 
+  early_stopping_rounds = 50, 
+  maximize = F)
+```
+
+Now we inspect the featured with high frequency, which is the improvement in accuracy brought by a feature to the branches it is on. Interestingly GrLivArea, TotalBsmtSF, and many other variables which were identified earlier for the linear model show up as features which are most requently used by the model:
+
+``` {r Important, echo=FALSE}
+ImportantFeatures <- xgb.importance(model = extremeGradientBoosting)
+ImportantFeatures %>% top_n(10) %>% kable()
+```
+
+While the following have very low frequency, and do intuitively contribute to uninteresting features of a property:
+
+``` {r Unimportant, echo=FALSE}
+ImportantFeatures %>% top_n(-10) %>% kable()
+```
+
+# Results
+
+``` {r predictingOutcomes, echo=FALSE}
+treePrediction <- predict(object = treeModel, newdata = testingSet)
+
+lmPrediction_1 <- predict(object = LinearModel_1, newdata = testingSet)
+
+lmPrediction_2 <- predict(object = LinearModel_2, newdata = testingSet)
+
+testingData <- sparse.model.matrix(
+  SalePrice~ .-Id, 
+  testingSet) 
+
+xgbPrediction <- predict(object = extremeGradientBoosting, newdata = testingData)
+```
+
+I have defined my own root mean squared error loss function, as per the definition in the course textbook, and have used this to comparatively analyise the outcome of the four models:
+```{r RMSEFunction, echo=TRUE}
+RMSE <- function(predicted, observed){
+  sqrt(mean((observed - predicted)^2))
+}
+```
+
+The result of these models is then compared, using the RMSE Function above, to the testing set. This demonstrates that each modelling iteration was more successful than the last. It does however suggest to me that there is a lot more potential in the linear modelling as adding an additional term was highly significant. 
+
+```{r ResultsRMSE, echo=FALSE}
+Results <- tibble("Prediction Method" = "Cart Model", "RSME" = RMSE(testingSet$SalePrice, treePrediction))
+Results <- Results %>% 
+  add_row("Prediction Method" = "Linear Regression", "RSME" = RMSE(testingSet$SalePrice, lmPrediction_1))
+Results <- Results %>% 
+  add_row("Prediction Method" = "Linear Regression, with Suburb", "RSME" = RMSE(testingSet$SalePrice, lmPrediction_2))
+Results <- Results%>% 
+  add_row("Prediction Method" = "Extreme Gradient Boosting", "RSME" = RMSE(testingSet$SalePrice, xgbPrediction))
+Results %>% kable()
+```
+
+# Conclusion
+The best predictive model produced RSME = $0.13$, I know from looking at some high performing kaggle competitions it's posible to acheive a result below $0.10 < RSME < 0.11$, however the users who wrote those scripts seemed to have a much deeper understanding the modelling of data than I did. There seemed to be opportunity to improve in the engineering of new features, the adjusting of skewedness in the features of the dataset, and the use of other packages, most noteably gtlmnet.
+
+I found a lot of limitations, and consequently a lot of opportunity, for future work throughout the process which was mainly due to my inexperience. While I was attempting to perform a modelling step I was also simultaneously learning both conceptually what I was trying to acheive and grappling with the technicalities of implementation. Althought our course was quite comprehensive I realised that there are opportunities for learning about the treatment of missing data in sophisticated ways, opportunities to investigate features and derive new and meaingful ones. Finally, there is an opportunity to explore both how to fit models to data and also how to use the modelling process to investigate the data. While I was able to extract the features which had a high frequency and I could relate that to successful additions to the linear models, I believe I could use more advanced modelling to better unstand which features are import and why.
+
+
